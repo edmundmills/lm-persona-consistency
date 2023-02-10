@@ -21,6 +21,7 @@ setuptools.setup(
         "tqdm",
         "numpy",
         "matplotlib",
+        "pandas"
     ],
     url="https://github.com/edmundmills/lm-persona-consistency]",
     license="MIT",

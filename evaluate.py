@@ -7,14 +7,11 @@ from typing import Any, Dict, List
 import numpy as np
 
 from persona_consistency.completion import (GPT3, AnswerSet, Completer,
-                                         ThrottledCompleter,
-                                         answer_multiple_choice)
+                                            ThrottledCompleter,
+                                            answer_multiple_choice)
 from persona_consistency.datasets import load_evals_questions
 from persona_consistency.prompting import SingleWordAnswerPrompter
 from persona_consistency.questions import MultipleChoiceQuestion, YesNoQuestion
-
-N_QUESTIONS = 20
-MAX_PERSONAS = 19
 
 
 def add_response_to(question: MultipleChoiceQuestion, inducer: str) -> MultipleChoiceQuestion:
@@ -25,7 +22,7 @@ Human:
     if isinstance(question, YesNoQuestion):
         return YesNoQuestion(text, question.label)
     return MultipleChoiceQuestion(
-        text = text,
+        text=text,
         options=question.options,
         label=question.label
     )
@@ -38,14 +35,6 @@ def evaluate_task(completer: Completer, simulation_inducers: List[str], question
         question_variations = [question] + [add_response_to(question, inducer) for inducer in simulation_inducers]
         answers.append(answer_multiple_choice(question_variations, prompter, completer))
     return answers
-
-
-def persona_std_on_question(answer_probs: np.ndarray) -> float:
-    return answer_probs[1:].std()
-
-
-def persona_mae_on_question(answer_probs: np.ndarray) -> float:
-    return abs(answer_probs[1:] - answer_probs[0]).mean()
 
 
 def get_answer_probs(answers: AnswerSet) -> np.ndarray:
@@ -72,6 +61,7 @@ def calculate_metrics(answers: List[AnswerSet]) -> Dict[str, Any]:
         answer_probs=answer_probs.tolist(),
     )
 
+
 def get_questions_path(task_name: str):
     evals_path = Path(f'questions/Anthropic-evals')
     for category_path in evals_path.iterdir():
@@ -81,13 +71,7 @@ def get_questions_path(task_name: str):
     raise NotImplementedError()
 
 
-TASK_CATEGORIES = {
-    'myopic-reward': 'advanced-ai-risk',
-    'self-awareness-general-ai': 'advanced-ai-risk',
-    'conscientiousness': 'persona'
-}
-
-def evaluate(model_name: str, task_name: str, simulation_inducers: List[str], save_path: Path):
+def evaluate(model_name: str, task_name: str, simulation_inducers: List[str], save_path: Path, n_questions: int):
     save_dir = save_path / task_name / model_name
     save_dir.mkdir(exist_ok=True, parents=True)
 
@@ -97,7 +81,7 @@ def evaluate(model_name: str, task_name: str, simulation_inducers: List[str], sa
     eval_questions = [q for q in eval_questions if len(q.options) == 2]
     if task_name in ['subscribes-to-Buddhism', 'subscribes-to-deontology']:
         eval_questions = [q for q in eval_questions if q.label == 'Yes']
-    eval_questions = eval_questions[:N_QUESTIONS]
+    eval_questions = eval_questions[:n_questions]
 
     answers = evaluate_task(completer, simulation_inducers, eval_questions)
     
@@ -117,12 +101,16 @@ def evaluate(model_name: str, task_name: str, simulation_inducers: List[str], sa
 
 def main():
     save_path = Path('results')
+    models = ['davinci', 'davinci-instruct-beta', 'text-davinci-001', 'text-davinci-002', 'text-davinci-003']
+    tasks = ['self-awareness-general-ai']
+    max_personas = 19
+    n_questions = 20
 
     with open('persona_inducers/text-davinci-003.json', 'r') as f:
-        simulation_inducers = [f"{a['prompt']}\nAssistant: {a['completion'].strip()}" for a in json.load(f)['answers']][:MAX_PERSONAS]
+        simulation_inducers = [f"{a['prompt']}\nAssistant: {a['completion'].strip()}" for a in json.load(f)['answers']][:max_personas]
 
-    for model, task in itertools.product(['davinci', 'davinci-instruct-beta', 'text-davinci-001', 'text-davinci-002', 'text-davinci-003'], ['believes-abortion-should-be-illegal']):
-        evaluate(model_name=model, task_name=task, simulation_inducers=simulation_inducers, save_path=save_path)
+    for model, task in itertools.product(models, tasks):
+        evaluate(model_name=model, task_name=task, simulation_inducers=simulation_inducers, save_path=save_path, n_questions=n_questions)
 
 
 if __name__ == "__main__":

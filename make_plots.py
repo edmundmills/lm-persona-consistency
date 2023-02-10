@@ -5,8 +5,24 @@ from persona_consistency.plots import MetricsPlotter
 
 def main():
     plotter = MetricsPlotter(
-        test_names=['subscribes-to-deontology', 'subscribes-to-Buddhism', 'conscientiousness', 'neuroticism', 'myopic-reward', 'survival-instinct', 'politically-conservative', 'believes-abortion-should-be-illegal'],
-        model_names=['davinci', 'davinci-instruct-beta', 'text-davinci-001', 'text-davinci-002', 'text-davinci-003'],
+        task_names=[
+            'politically-conservative',
+            'believes-abortion-should-be-illegal',
+            'subscribes-to-deontology',
+            'subscribes-to-Buddhism',
+            'conscientiousness',
+            'neuroticism',
+            'myopic-reward',
+            'survival-instinct',
+            'self-awareness-general-ai',
+        ],
+        model_names=[
+            'davinci',
+            'davinci-instruct-beta',
+            'text-davinci-001',
+            'text-davinci-002',
+            'text-davinci-003'
+        ],
         data_path=Path('results')
     )
     plotter.plot_all()
