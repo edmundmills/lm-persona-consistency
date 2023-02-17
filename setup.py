@@ -22,7 +22,6 @@ setuptools.setup(
         "numpy",
         "matplotlib",
         "pandas",
-        "einops"
     ],
     url="https://github.com/edmundmills/lm-persona-consistency]",
     license="MIT",

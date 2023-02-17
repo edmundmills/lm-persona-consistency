@@ -2,14 +2,12 @@ import itertools
 import json
 import textwrap
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
-import einops
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.cm import get_cmap
-from mpl_toolkits.axes_grid1 import axes_size, make_axes_locatable
 from tqdm import tqdm
 
 
@@ -28,19 +26,12 @@ def calculate_tv_distance(answer_probs) -> float:
 
 def load_results(path: Path) -> Dict[str, Any]:
     results = json.load(path.open('r'))
-    answer_probs = np.array(results['metrics']['answer_probs'])
-    results['metrics']['expected_tv_distance'] = calculate_tv_distance(answer_probs)
-    default_answers = answer_probs[:, :1]
-    average_context_answer_probs = answer_probs[:, 1:]
-    average_context_answer_probs = einops.rearrange(average_context_answer_probs, 'q (c a) -> q c a', c=4).mean(axis=2)
-    average_context_answer_probs = np.concatenate([default_answers, average_context_answer_probs], axis=1)
-    results['metrics']['expected_tv_distance_between_context_types'] = calculate_tv_distance(average_context_answer_probs)
-    results['metrics']['expected_tv_distance_between_questions'] = calculate_tv_distance(default_answers.T)
     return results['metrics']
 
 
-def load_results_for(data_path: Path, test_name: str, model: str):
-    return load_results(data_path / test_name / model / 'completions.json')
+def load_results_for(data_path: Path, test_name: str, model: str) -> "Metrics":
+    metric_dict = load_results(data_path / test_name / model / 'completions.json')
+    return Metrics(np.array(metric_dict['answer_probs']))
 
 
 def sample_question_for(data_path: Path, test_name: str):
@@ -48,30 +39,122 @@ def sample_question_for(data_path: Path, test_name: str):
     return results['questions'][0]
 
 
+class Metrics:
+    def __init__(self, answer_probs: np.ndarray) -> None:
+        self._answer_probs = answer_probs
+        self.metric_fns = dict(
+            default_behavior=self.__class__.default_behavior.fget,
+            persona_behavior=self.__class__.persona_behavior.fget,
+            default_answers=self.__class__.default_answers.fget,
+            persona_answers=self.__class__.persona_answers.fget,
+            default_aggregate_score=self.__class__.default_aggregate_score.fget,
+            persona_aggregate_scores=self.__class__.persona_aggregate_scores.fget,
+            persona_shifts=self.__class__.persona_shifts.fget,
+            overall_prediction_accuracy=self.__class__.overall_prediction_accuracy.fget,
+            expected_tv_distance_personas=self.__class__.expected_tv_distance_personas.fget,
+            expected_tv_distance_questions=self.__class__.expected_tv_distance_questions.fget,
+            answer_probs=self.__class__.answer_probs.fget
+        )
+
+    def __getitem__(self, metric_name: str):
+        return self.metric_fns[metric_name](self)
+
+    def to_dict(self):
+        return {k: v(self) for k, v in self.metric_fns.items()}
+
+    def to_json(self):
+        return {k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in self.to_dict().items()}
+
+    @property
+    def answer_probs(self):
+        return self._answer_probs
+
+    @property
+    def default_behavior(self):
+        return self.answer_probs[:, :1]
+
+    @property
+    def persona_behavior(self):
+        return self.answer_probs[:, 1:]
+
+    @property
+    def default_answers(self):
+        return (self.default_behavior > 0.5)
+
+    @property
+    def persona_answers(self):
+        return (self.persona_behavior > 0.5)
+
+    @property
+    def default_aggregate_score(self):
+       return self.default_answers.mean()
+
+    @property
+    def persona_aggregate_scores(self):
+        return self.persona_answers.mean(axis=0)
+
+    @property
+    def persona_shifts(self):
+        return (self.persona_behavior - self.default_behavior).mean(axis=0)
+
+    @property
+    def overall_prediction_accuracy(self):
+        return (self.persona_answers == self.default_answers).astype(float).mean()
+
+    @property
+    def expected_tv_distance_personas(self):
+        return calculate_tv_distance(self.answer_probs)
+
+    @property
+    def expected_tv_distance_questions(self):
+        return calculate_tv_distance(self.default_behavior.T)
+
+
+class MetricsCollection:
+    def __init__(self, metrics_dict: Dict[Tuple[str, str], Metrics], task_names: List[str], model_names: List[str]) -> None:
+        self.metrics_dict = metrics_dict
+        self.task_names = task_names
+        self.model_names = model_names
+
+    @classmethod
+    def load(cls, task_names: List[str], model_names: List[str], data_path: Path = Path('persona_consistency')):
+        metrics_collection_dict = {
+            (test_name, model): load_results_for(data_path, test_name, model)
+            for test_name, model in itertools.product(task_names, model_names)
+            if (data_path / test_name / model).exists()
+        }
+        return cls(metrics_collection_dict, task_names, model_names)
+
+    def __getitem__(self, task_and_model_name: Tuple[str, str]):
+        return self.metrics_dict[task_and_model_name]
+
+    def get_metric_for_model(self, model_name: str, metric_name: str) -> List[Any]:
+        return [self[(tn, model_name)][metric_name] for tn in self.task_names]
+
+    def get_metric_for_task(self, task_name: str, metric_name: str) -> List[Any]:
+        return [self[(task_name, model_name)][metric_name] for model_name in self.model_names]
+
+
 class MetricsPlotter:
     def __init__(self, task_names: List[str], model_names: List[str], data_path: Path = Path('persona_consistency'), save_dir_name: str = 'figures', ) -> None:
         self.data_path = data_path
         self.save_path = data_path / save_dir_name
-        self.save_path.mkdir(exist_ok=True, parents=True)
-        self.task_names = task_names
-        self.model_names = model_names
-        for tn, mn in itertools.product(task_names, model_names):
-            (self.save_path / tn / mn).mkdir(exist_ok=True, parents=True)
+        self.metrics_collection = MetricsCollection.load(task_names, model_names, data_path)
         self.sample_questions = {task_name: sample_question_for(data_path, task_name) for task_name in task_names}
-        self.metrics = {
-            (test_name, model): load_results_for(self.data_path, test_name, model)
-            for test_name, model in itertools.product(task_names, model_names)
-            if (data_path / test_name / model).exists()
-        }
 
-    def get_metric_for_model(self, model_name: str, metric_name: str):
-        return [self.metrics[(tn, model_name)][metric_name] for tn in self.task_names]
+    @property
+    def task_names(self):
+        return self.metrics_collection.task_names
 
-    def get_metric_for_task(self, task_name: str, metric_name: str):
-        return [self.metrics[(task_name, model_name)][metric_name] for model_name in self.model_names]
+    @property
+    def model_names(self):
+        return self.metrics_collection.model_names
 
-    def get_default_scores(self, task_name: str):
-        return [(np.array(self.metrics[(task_name, model_name)]['answer_probs'])[:, 0] > 0.5).mean() for model_name in self.model_names]
+    def get_metric_for_model(self, model_name: str, metric_name: str) -> List[Any]:
+        return [self.metrics_collection[(tn, model_name)][metric_name] for tn in self.task_names]
+
+    def get_metric_for_task(self, task_name: str, metric_name: str) -> List[Any]:
+        return [self.metrics_collection[(task_name, model_name)][metric_name] for model_name in self.model_names]
 
     def plot_expected_tv_distance_of_personas(self):
         plt.close('all')
@@ -81,7 +164,7 @@ class MetricsPlotter:
         M = len(self.model_names)
         ind = np.arange(N) 
         width = 0.75 / M
-        if N > 1:
+        if M > 1:
             offsets = np.linspace(-1, 1, M) * width * (M - 1) / 2
         else:
             offsets = [0]
@@ -89,9 +172,10 @@ class MetricsPlotter:
         cmap = get_cmap('viridis_r')
         color_is = np.linspace(0, 1, M)
         for i, (model_name, color_i) in enumerate(zip(self.model_names, color_is)):
+            tv_distances = self.get_metric_for_model(model_name, 'expected_tv_distance_personas')
             pos = ind + offsets[i]
             color = cmap(color_i)
-            bars.append(plt.barh(pos, list(reversed(self.get_metric_for_model(model_name, 'expected_tv_distance'))), width, color=color, edgecolor='black', alpha=0.75))
+            bars.append(plt.barh(pos, list(reversed(tv_distances)), width, color=color, edgecolor='black', alpha=0.75))
         plt.yticks(ind, list(reversed(self.task_names)))
         plt.legend(list(reversed(bars)), list(reversed(self.model_names)), bbox_to_anchor=(.75, 1.0), loc='upper left', facecolor='white', framealpha=1)
         ylim = (ind[0] - 0.5, ind[-1] + 0.5)
@@ -101,18 +185,17 @@ class MetricsPlotter:
         plt.tight_layout()
         plt.savefig(self.save_path / 'persona_tv_distances.png', bbox_inches='tight')
 
-        data = {model: self.get_metric_for_model(model, 'expected_tv_distance') for model in self.model_names}
+        data = {model: self.get_metric_for_model(model, 'expected_tv_distance_personas') for model in self.model_names}
         df = pd.DataFrame.from_dict(data, columns=self.task_names, orient='index').T
         df.to_csv(self.save_path / 'persona_tv_distances.csv')
-
 
     def overall_performance(self, task_name: str):
         plt.close('all')
         plt.clf()
-        persona_scores = np.array(self.get_metric_for_task(task_name, 'persona_scores'))
+        persona_scores = np.array(self.get_metric_for_task(task_name, 'persona_aggregate_scores'))
         x = list(range(1, 1+len(self.model_names)))
         violin = plt.violinplot(persona_scores.T)
-        defaults = plt.plot(x, self.get_default_scores(task_name), 'o', markersize=12)
+        defaults = plt.plot(x, self.get_metric_for_task(task_name, 'default_aggregate_score'), 'o', markersize=12)
         plt.ylim([0,1])
         plt.xticks(x, labels=self.model_names, rotation=45, ha='right')
         plt.ylabel('Fraction of Positive Answers')
@@ -124,7 +207,7 @@ class MetricsPlotter:
     def score_heat_map(self, model_name: str, task_name: str):
         plt.close('all')
         plt.clf()
-        answer_probs = np.array(self.metrics[(task_name, model_name)]['answer_probs'])
+        answer_probs = np.array(self.metrics_collection[(task_name, model_name)]['answer_probs'])
         fig, ax = plt.subplots()
         im = ax.imshow(answer_probs, cmap='PiYG', interpolation='nearest')
         ax.set_xlabel('Contexts')
@@ -155,11 +238,10 @@ class MetricsPlotter:
         plt.tight_layout()
         plt.savefig(self.save_path / task_name / model_name / 'scores.png')
 
-
     def diff_heat_map(self, model_name: str, task_name: str):
         plt.close('all')
         plt.clf()
-        answer_probs = np.array(self.metrics[(task_name, model_name)]['answer_probs'])
+        answer_probs = np.array(self.metrics_collection[(task_name, model_name)]['answer_probs'])
         diff = answer_probs[:, 1:] - answer_probs[:, :1]
         fig, ax = plt.subplots()
         im = ax.imshow(diff, cmap='PiYG', interpolation='nearest')
@@ -194,7 +276,7 @@ class MetricsPlotter:
     def predictive_accuracy_task(self, task_name):
         plt.close('all')
         plt.clf()
-        default_scores = np.array(self.get_default_scores(task_name))
+        default_scores = np.array(self.get_metric_for_task(task_name, 'default_aggregate_score'))
         predict_majority = np.maximum(default_scores, 1 - default_scores)
         accuracies = self.get_metric_for_task(task_name, 'overall_prediction_accuracy')
         x = list(range(1, 1+len(self.model_names)))
@@ -214,9 +296,8 @@ class MetricsPlotter:
     def expected_tv_distance_task(self, task_name):
         plt.close('all')
         plt.clf()
-        persona_tv_difference = self.get_metric_for_task(task_name, 'expected_tv_distance')
-        question_tv_difference = self.get_metric_for_task(task_name, 'expected_tv_distance_between_questions')
-        persona_type_tv_difference = self.get_metric_for_task(task_name, 'expected_tv_distance_between_context_types')
+        persona_tv_difference = self.get_metric_for_task(task_name, 'expected_tv_distance_personas')
+        question_tv_difference = self.get_metric_for_task(task_name, 'expected_tv_distance_questions')
         x = list(range(1, 1+len(self.model_names)))
         plt.plot(x, persona_tv_difference, 'x-', label='Across all contexts')
         # plt.plot(x, persona_type_tv_difference, 'x-', label='Across context types')
@@ -304,7 +385,7 @@ class MetricsPlotter:
         M = len(self.model_names)
         ind = np.arange(N) 
         width = .75 / M
-        if N > 1:
+        if M > 1:
             offsets = np.linspace(-1, 1, M) * width * (M - 1) / 2
         else:
             offsets = [0]
@@ -333,6 +414,10 @@ class MetricsPlotter:
         df.to_csv(self.save_path / 'prediction_accuracy.csv')
 
     def plot_all(self):
+        self.save_path.mkdir(exist_ok=True, parents=True)
+        for tn, mn in itertools.product(self.task_names, self.model_names):
+            (self.save_path / tn / mn).mkdir(exist_ok=True, parents=True)
+
         self.plot_expected_tv_distance_of_personas()
         self.predictive_accuracy()
         for model_name in tqdm(self.model_names, desc='Making Model Plots'):

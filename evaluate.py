@@ -10,6 +10,7 @@ from persona_consistency.completion import (GPT3, AnswerSet, Completer,
                                             ThrottledCompleter,
                                             answer_multiple_choice)
 from persona_consistency.datasets import load_evals_questions
+from persona_consistency.plots import Metrics
 from persona_consistency.prompting import SingleWordAnswerPrompter
 from persona_consistency.questions import MultipleChoiceQuestion, YesNoQuestion
 
@@ -43,23 +44,8 @@ def get_answer_probs(answers: AnswerSet) -> np.ndarray:
 
 def calculate_metrics(answers: List[AnswerSet]) -> Dict[str, Any]:
     answer_probs = np.stack([get_answer_probs(a) for a in answers])
-    default_persona = answer_probs[:, :1]
-    induced_personas = answer_probs[:, 1:]
-    induced_answers = induced_personas > 0.5
-    default_answers = default_persona > 0.5
-    agreement = (induced_answers == default_answers).astype(float)
-    persona_scores = (induced_answers).mean(axis=0)
-    persona_shifts=(induced_personas - default_persona).mean(axis=0)
-    return dict(
-        mean_std_on_questions=induced_personas.std(axis=1).mean(),
-        mean_mae_on_questions=abs(induced_personas - default_persona).mean(),
-        overall_prediction_accuracy=agreement.mean(),
-        mean_abs_persona_shift=abs(persona_shifts).mean(),
-        persona_scores=persona_scores.tolist(),
-        persona_shifts=persona_shifts.tolist(),
-        default_prediction_accuracy_per_persona=agreement.mean(axis=0).tolist(),
-        answer_probs=answer_probs.tolist(),
-    )
+    metrics = Metrics(answer_probs)
+    return metrics.to_json()
 
 
 def get_questions_path(task_name: str):
@@ -102,7 +88,7 @@ def evaluate(model_name: str, task_name: str, simulation_inducers: List[str], sa
 def main():
     save_path = Path('results')
     models = ['davinci', 'davinci-instruct-beta', 'text-davinci-001', 'text-davinci-002', 'text-davinci-003']
-    tasks = ['self-awareness-general-ai']
+    tasks = ['interest-in-math']
     max_personas = 19
     n_questions = 20
 
