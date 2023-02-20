@@ -86,11 +86,11 @@ def evaluate(model_name: str, task_name: str, simulation_inducers: List[str], sa
 
 
 def main():
-    save_path = Path('results')
+    save_path = Path('results') / '2_tasks'
     models = ['davinci', 'davinci-instruct-beta', 'text-davinci-001', 'text-davinci-002', 'text-davinci-003']
-    tasks = ['interest-in-math']
+    tasks = ['conscientiousness', 'subscribes-to-deontology']
     max_personas = 19
-    n_questions = 20
+    n_questions = 100
 
     with open('persona_inducers/text-davinci-003.json', 'r') as f:
         simulation_inducers = [f"{a['prompt']}\nAssistant: {a['completion'].strip()}" for a in json.load(f)['answers']][:max_personas]
