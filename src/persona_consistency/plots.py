@@ -4,11 +4,19 @@ import textwrap
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+import einops
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.cm import get_cmap
 from tqdm import tqdm
+
+
+def aggregate_similar_contexts(data: np.ndarray) -> np.ndarray:
+    if len(data.shape) == 1:
+        data = einops.rearrange(data, 'p -> p 1')
+    data = einops.rearrange(data, '(c r) q -> c r q', r=4)
+    return data.mean(axis=1)
 
 
 def binary_tv_distance(p, q) -> float:
@@ -135,12 +143,42 @@ class MetricsCollection:
         return [self[(task_name, model_name)][metric_name] for model_name in self.model_names]
 
 
+def persona_shift_bar(ax: plt.Axes, persona_shifts: List[float], personas: List[str], task_name: str):
+    ax.bar(personas, persona_shifts, width=0.5, alpha=0.65)
+    ax.set_title(task_name)
+    ax.set_ylim(-0.5, 0.5)
+    xlim = (-0.5, 3.5)
+    ax.set_xlim(*xlim)
+    ax.set_ylabel('Mean Probability Shift')
+    ax.axhline(color='black', linewidth=0.75)
+
+
+def expected_tv_distance_plot(ax: plt.Axes, persona_tv_difference: List[float], question_tv_difference: List[float], model_names: List[str], task_name: str, legend: bool = True, x_labels: bool = True, title_fn = lambda tn: f'Variation of Behavior: {tn}'):
+        x = list(range(1, 1+len(model_names)))
+        xlim = (x[0] - 0.5, x[-1] + 0.5)
+        ax.set_xlim(xlim)
+        ax.set_ylim(-0.025, 0.525)
+        ax.plot(x, persona_tv_difference, 'x-', label='Across all contexts')
+        # plt.plot(x, persona_type_tv_difference, 'x-', label='Across context types')
+        ax.plot(x, question_tv_difference, 'x-', label='Across default questions')
+        ax.set_title(title_fn(task_name))
+        ax.set_ylabel('Expected Total Variation Distance')
+        if x_labels:
+            ax.set_xticks(x, labels=model_names, rotation=45, ha='right')
+        ax.hlines([0], xlim[0], xlim[1], linestyles='dashed', colors=['blue'], label='Positive prob is always the same', alpha=0.5)
+        ax.hlines([0.3333], xlim[0], xlim[1], linestyles='dashed', colors=['gray'], label='Positive prob is uniform between [0, 1]')
+        ax.hlines([0.5], xlim[0], xlim[1], linestyles='dashed', colors=['green'], label='Positive prob is 50% 0.0, 50% 1.0')
+        if legend:
+            ax.legend(facecolor='white', framealpha=1)
+
+
 class MetricsPlotter:
     def __init__(self, task_names: List[str], model_names: List[str], data_path: Path = Path('persona_consistency'), save_dir_name: str = 'figures', ) -> None:
         self.data_path = data_path
         self.save_path = data_path / save_dir_name
         self.metrics_collection = MetricsCollection.load(task_names, model_names, data_path)
         self.sample_questions = {task_name: sample_question_for(data_path, task_name) for task_name in task_names}
+        self.context_names = ['poem', 'story', 'satire', 'opinion']
 
     @property
     def task_names(self):
@@ -231,7 +269,7 @@ class MetricsPlotter:
             example_text_lines.append('')
         text = '\n'.join(example_text_lines)
         plt.text(-13, 2, text, ha='left', va='top', fontsize=9)
-        plt.xticks([0, 2.5, 6.5, 10.5, 14.5], labels=['default', 'poem', 'story', 'satire', 'opinion'], rotation=45, ha='right')
+        plt.xticks([0, 2.5, 6.5, 10.5, 14.5], labels=['default', *self.context_names], rotation=45, ha='right')
         ylim = (-0.5, 19.5)
         for x in [0.5, 4.5, 8.5, 12.5]:
             plt.vlines(x, *ylim, color='black')
@@ -260,7 +298,7 @@ class MetricsPlotter:
             labelleft=False,
             labelbottom=True
         )
-        plt.xticks([1.5, 5.5, 9.5, 13.5], labels=['poem', 'story', 'satire', 'opinion'], rotation=45, ha='right')
+        plt.xticks([1.5, 5.5, 9.5, 13.5], labels=self.context_names, rotation=45, ha='right')
         ylim = (-0.5, 19.5)
         for x in [3.5, 7.5, 11.5]:
             plt.vlines(x, *ylim, color='black')
@@ -296,23 +334,10 @@ class MetricsPlotter:
     def expected_tv_distance_task(self, task_name):
         plt.close('all')
         plt.clf()
+        fig, ax = plt.subplots()
         persona_tv_difference = self.get_metric_for_task(task_name, 'expected_tv_distance_personas')
         question_tv_difference = self.get_metric_for_task(task_name, 'expected_tv_distance_questions')
-        x = list(range(1, 1+len(self.model_names)))
-        plt.plot(x, persona_tv_difference, 'x-', label='Across all contexts')
-        # plt.plot(x, persona_type_tv_difference, 'x-', label='Across context types')
-        plt.plot(x, question_tv_difference, 'x-', label='Across questions')
-        plt.ylim([-0.025,0.525])
-        plt.xticks(x, labels=self.model_names, rotation=45, ha='right')
-        plt.title(f'Variation of Behavior: {task_name}')
-        plt.ylabel('Expected Total Variation Distance')
-        xlim = (x[0] - 0.5, x[-1] + 0.5)
-        plt.hlines([0.5], xlim[0], xlim[1], linestyles='dashed', colors=['green'], label='Behavior is 50% 0.0, 50% 1.0')
-        plt.hlines([0.3333], xlim[0], xlim[1], linestyles='dashed', colors=['gray'], label='Behavior is uniform between [0, 1]')
-        plt.hlines([0], xlim[0], xlim[1], linestyles='dashed', colors=['blue'], label='Behavior is always the same', alpha=0.5)
-        plt.xlim(xlim)
-        plt.legend(facecolor='white', framealpha=1)
-
+        expected_tv_distance_plot(ax, persona_tv_difference, question_tv_difference, self.model_names, task_name)
         plt.tight_layout()
         plt.savefig(self.save_path / task_name / 'expected_tv_distance.png')
 
@@ -338,7 +363,7 @@ class MetricsPlotter:
             labelbottom=True
         )
         n_rows = len(self.task_names)
-        plt.xticks([1.5, 5.5, 9.5, 13.5], labels=['poem', 'story', 'satire', 'opinion'], rotation=45, ha='right')
+        plt.xticks([1.5, 5.5, 9.5, 13.5], labels=self.context_names, rotation=45, ha='right')
         ylim = (-0.5, n_rows - 0.5)
         for x in [3.5, 7.5, 11.5]:
             plt.vlines(x, *ylim, color='black')
@@ -357,7 +382,7 @@ class MetricsPlotter:
         ax.set_ylabel('Models')
         plt.title(f'Shift in Behavior: {task_name}')
         cbar = ax.figure.colorbar(im, ax=ax, shrink=0.22, aspect=30*0.22)
-        im.set_clim(-1, 1)
+        im.set_clim(-0.5, 0.5)
         cbar.set_label('Mean Probability Shift')
         ax.tick_params(
             axis='both',
@@ -369,7 +394,7 @@ class MetricsPlotter:
             labelbottom=True
         )
         n_rows = len(self.model_names)
-        plt.xticks([1.5, 5.5, 9.5, 13.5], labels=['poem', 'story', 'satire', 'opinion'], rotation=45, ha='right')
+        plt.xticks([1.5, 5.5, 9.5, 13.5], labels=self.context_names, rotation=45, ha='right')
         ylim = (-0.5, n_rows - 0.5)
         for x in [3.5, 7.5, 11.5]:
             plt.vlines(x, *ylim, color='black')
@@ -413,20 +438,59 @@ class MetricsPlotter:
         df = pd.DataFrame.from_dict(data, columns=self.task_names, orient='index').T
         df.to_csv(self.save_path / 'prediction_accuracy.csv')
 
+    def plot_all_tv_distances(self):
+        plt.close('all')
+        plt.clf()
+        fig, axes = plt.subplots(3, 3, figsize=(9, 10))
+        for task_name, ax in zip(self.task_names, itertools.chain(*axes)):
+            persona_tv_difference = self.get_metric_for_task(task_name, 'expected_tv_distance_personas')
+            question_tv_difference = self.get_metric_for_task(task_name, 'expected_tv_distance_questions')
+            expected_tv_distance_plot(ax, persona_tv_difference, question_tv_difference, self.model_names, task_name, legend=False, title_fn=lambda tn: f'{tn}')
+        for ax in fig.get_axes():
+            ax.label_outer()
+        handles, labels = axes[0][0].get_legend_handles_labels()
+        fig.suptitle('Expected Total Variation Distance Between Contexts', fontsize='x-large')
+        fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -.1))
+        plt.tight_layout()
+        plt.savefig(self.save_path / 'all_tv_distances.png', bbox_inches='tight')
+
+    def plot_all_persona_shifts(self, model_name: str):
+        plt.close('all')
+        plt.clf()
+        fig, axes = plt.subplots(3, 3, figsize=(9, 9))
+        for i, (task_name, ax) in enumerate(zip(self.task_names, itertools.chain(*axes))):
+            persona_shifts = self.metrics_collection[(task_name, model_name)].persona_shifts
+            persona_shifts = aggregate_similar_contexts(persona_shifts).squeeze().tolist()
+            persona_shift_bar(ax, persona_shifts, self.context_names, task_name)
+            if i % 3 != 0:
+                ax.tick_params(labelleft=False)
+                ax.set_ylabel('')
+
+
+        fig.suptitle(f'Context Induced Shift in Behavior: {model_name}', fontsize='x-large')
+        plt.tight_layout()
+        plt.savefig(self.save_path / 'models' / model_name / 'all_persona_shifts.png', bbox_inches='tight')
+
+
     def plot_all(self):
+        print(f'Saving figures to {self.save_path}')
         self.save_path.mkdir(exist_ok=True, parents=True)
         for tn, mn in itertools.product(self.task_names, self.model_names):
             (self.save_path / tn / mn).mkdir(exist_ok=True, parents=True)
-
-        self.plot_expected_tv_distance_of_personas()
-        self.predictive_accuracy()
+        for plot_fn in tqdm([
+            self.plot_expected_tv_distance_of_personas,
+            self.predictive_accuracy,
+            self.plot_all_tv_distances
+        ], desc='Making Overall Plots'):
+            plot_fn()
         for model_name in tqdm(self.model_names, desc='Making Model Plots'):
             self.mean_behavior_shift_model(model_name)
+            self.plot_all_persona_shifts(model_name)
         for task_name in tqdm(self.task_names, desc='Making Task Plots'):
             self.mean_behavior_shift_task(task_name)
             self.overall_performance(task_name)
             self.predictive_accuracy_task(task_name)
             self.expected_tv_distance_task(task_name)
-        for task_name, model_name in tqdm(list(itertools.product(self.task_names, self.model_names)), desc='Making Model Plots'):
+        for task_name, model_name in tqdm(list(itertools.product(self.task_names, self.model_names)), desc='Making Model/Task Plots'):
             self.score_heat_map(model_name, task_name)
             self.diff_heat_map(model_name, task_name)

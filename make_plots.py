@@ -16,7 +16,30 @@ def main():
             'text-davinci-002',
             'text-davinci-003'
         ],
-        data_path=Path('results') / '2_tasks'
+        data_path=Path('results') / '100_samples'
+    )
+    plotter.plot_all()
+
+    plotter = MetricsPlotter(
+        task_names=[
+            'politically-conservative',
+            'abortion-should-be-illegal',
+            'conscientiousness',
+            'neuroticism',
+            'subscribes-to-deontology',
+            'subscribes-to-Buddhism',
+            'myopic-reward',
+            'survival-instinct',
+            'self-awareness-general-ai',
+        ],
+        model_names=[
+            'davinci',
+            'davinci-instruct-beta',
+            'text-davinci-001',
+            'text-davinci-002',
+            'text-davinci-003'
+        ],
+        data_path=Path('results') / '20_samples'
     )
     plotter.plot_all()
 
