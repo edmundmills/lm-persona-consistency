@@ -31,6 +31,10 @@ def calculate_tv_distance(answer_probs) -> float:
         mean_tv_distances.append(mean_tv_distance)
     return np.array(mean_tv_distances).mean()
 
+def tv_distance_alternating(answer_probs) -> float:
+    answer_probs = einops.rearrange(answer_probs, 'c (q v) -> (v c) q', v=2)
+    return calculate_tv_distance(answer_probs)
+
 
 def load_results(path: Path) -> Dict[str, Any]:
     results = json.load(path.open('r'))
@@ -39,7 +43,8 @@ def load_results(path: Path) -> Dict[str, Any]:
 
 def load_results_for(data_path: Path, test_name: str, model: str) -> "Metrics":
     metric_dict = load_results(data_path / test_name / model / 'completions.json')
-    return Metrics(np.array(metric_dict['answer_probs']))
+    alternating_behavior = test_name in ('abortion-should-be-illegal', 'conscientiousness', 'neuroticism', 'politically-conservative')
+    return Metrics(np.array(metric_dict['answer_probs']), alternating_behavior)
 
 
 def sample_question_for(data_path: Path, test_name: str):
@@ -48,27 +53,16 @@ def sample_question_for(data_path: Path, test_name: str):
 
 
 class Metrics:
-    def __init__(self, answer_probs: np.ndarray) -> None:
+    def __init__(self, answer_probs: np.ndarray, alternating_behavior: bool = False) -> None:
         self._answer_probs = answer_probs
-        self.metric_fns = dict(
-            default_behavior=self.__class__.default_behavior.fget,
-            persona_behavior=self.__class__.persona_behavior.fget,
-            default_answers=self.__class__.default_answers.fget,
-            persona_answers=self.__class__.persona_answers.fget,
-            default_aggregate_score=self.__class__.default_aggregate_score.fget,
-            persona_aggregate_scores=self.__class__.persona_aggregate_scores.fget,
-            persona_shifts=self.__class__.persona_shifts.fget,
-            overall_prediction_accuracy=self.__class__.overall_prediction_accuracy.fget,
-            expected_tv_distance_personas=self.__class__.expected_tv_distance_personas.fget,
-            expected_tv_distance_questions=self.__class__.expected_tv_distance_questions.fget,
-            answer_probs=self.__class__.answer_probs.fget
-        )
+        self.alternating_behavior = alternating_behavior
+        self.question_tv_distance_fn = tv_distance_alternating if self.alternating_behavior else calculate_tv_distance
 
     def __getitem__(self, metric_name: str):
-        return self.metric_fns[metric_name](self)
+        return self.__class__.__dict__[metric_name].fget(self)
 
     def to_dict(self):
-        return {k: v(self) for k, v in self.metric_fns.items()}
+        return {k: v.fget(self) for k, v in self.__class__.__dict__.items() if isinstance(v, property)}  # type: ignore
 
     def to_json(self):
         return {k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in self.to_dict().items()}
@@ -115,7 +109,17 @@ class Metrics:
 
     @property
     def expected_tv_distance_questions(self):
-        return calculate_tv_distance(self.default_behavior.T)
+        return self.question_tv_distance_fn(self.answer_probs.T)
+
+    @property
+    def expected_tv_distance_persona_questions(self):
+        data = aggregate_similar_contexts(self.persona_behavior.T)
+        return [self.question_tv_distance_fn(persona) for persona in np.split(data, data.shape[0], axis=0)]
+
+    @property
+    def expected_tv_distance_overall(self):
+        answer_probs = einops.rearrange(self.answer_probs, 'q c -> (c q) 1').T
+        return self.question_tv_distance_fn(answer_probs)
 
 
 class MetricsCollection:
@@ -153,14 +157,13 @@ def persona_shift_bar(ax: plt.Axes, persona_shifts: List[float], personas: List[
     ax.axhline(color='black', linewidth=0.75)
 
 
-def expected_tv_distance_plot(ax: plt.Axes, persona_tv_difference: List[float], question_tv_difference: List[float], model_names: List[str], task_name: str, legend: bool = True, x_labels: bool = True, title_fn = lambda tn: f'Variation of Behavior: {tn}'):
+def expected_tv_distance_plot(ax: plt.Axes, sequences: List[Tuple[str, List[float]]], model_names: List[str], task_name: str, x_labels: bool = True, title_fn = lambda tn: f'Variation of Behavior: {tn}'):
         x = list(range(1, 1+len(model_names)))
         xlim = (x[0] - 0.5, x[-1] + 0.5)
         ax.set_xlim(xlim)
         ax.set_ylim(-0.025, 0.525)
-        ax.plot(x, persona_tv_difference, 'x-', label='Across all contexts')
-        # plt.plot(x, persona_type_tv_difference, 'x-', label='Across context types')
-        ax.plot(x, question_tv_difference, 'x-', label='Across default questions')
+        for label, data in sequences:
+            ax.plot(x, data, 'x-', label=label)
         ax.set_title(title_fn(task_name))
         ax.set_ylabel('Expected Total Variation Distance')
         if x_labels:
@@ -168,8 +171,6 @@ def expected_tv_distance_plot(ax: plt.Axes, persona_tv_difference: List[float], 
         ax.hlines([0], xlim[0], xlim[1], linestyles='dashed', colors=['blue'], label='Positive prob is always the same', alpha=0.5)
         ax.hlines([0.3333], xlim[0], xlim[1], linestyles='dashed', colors=['gray'], label='Positive prob is uniform between [0, 1]')
         ax.hlines([0.5], xlim[0], xlim[1], linestyles='dashed', colors=['green'], label='Positive prob is 50% 0.0, 50% 1.0')
-        if legend:
-            ax.legend(facecolor='white', framealpha=1)
 
 
 class MetricsPlotter:
@@ -335,11 +336,16 @@ class MetricsPlotter:
         plt.close('all')
         plt.clf()
         fig, ax = plt.subplots()
-        persona_tv_difference = self.get_metric_for_task(task_name, 'expected_tv_distance_personas')
-        question_tv_difference = self.get_metric_for_task(task_name, 'expected_tv_distance_questions')
-        expected_tv_distance_plot(ax, persona_tv_difference, question_tv_difference, self.model_names, task_name)
+        sequences = [
+            ('Overall', self.get_metric_for_task(task_name, 'expected_tv_distance_overall')),
+            ('Across contexts', self.get_metric_for_task(task_name, 'expected_tv_distance_personas')),
+            ('Across questions', self.get_metric_for_task(task_name, 'expected_tv_distance_questions'))
+        ]
+        expected_tv_distance_plot(ax, sequences, self.model_names, task_name)
+        handles, labels = ax.get_legend_handles_labels()
+        fig.legend(handles, labels, loc='upper right', bbox_to_anchor=(1.5, 0.95))
         plt.tight_layout()
-        plt.savefig(self.save_path / task_name / 'expected_tv_distance.png')
+        plt.savefig(self.save_path / task_name / 'expected_tv_distance.png', bbox_inches="tight")
 
     def mean_behavior_shift_model(self, model_name: str):
         plt.close('all')
@@ -441,18 +447,55 @@ class MetricsPlotter:
     def plot_all_tv_distances(self):
         plt.close('all')
         plt.clf()
+        data = np.array([self.get_metric_for_task(task_name, 'expected_tv_distance_personas') for task_name in self.task_names])
+        print(data.max())
+        fig, ax = plt.subplots()
+        im = ax.imshow(data, cmap='RdPu', interpolation='nearest')
+        plt.title(f'Expected Difference Between Contexts')
+        cbar = ax.figure.colorbar(im, ax=ax)
+        im.set_clim(0, 0.33)
+        cbar.set_label('Expected Difference in Positive Probability')
+        ax.tick_params(
+            axis='both',
+            which='both',
+            bottom=True,
+            left=True,
+            top=False,
+            labelleft=True,
+            labelbottom=True
+        )
+        n_rows = len(self.task_names)
+        plt.xticks(np.arange(len(self.model_names)), labels=self.model_names, rotation=45, ha='right')
+        ylim = (-0.5, n_rows - 0.5)
+        plt.yticks(np.arange(n_rows), self.task_names)
+        plt.savefig(self.save_path / 'all_tv_distances.png', bbox_inches='tight')
+
+    def plot_tv_distances_model(self, model_name: str):
+        plt.close('all')
+        plt.clf()
+        data_tuples = [(t, tv) for t, tv in zip(self.task_names, self.get_metric_for_model(model_name, 'expected_tv_distance_personas'))]
+        data_tuples = sorted(data_tuples, key=lambda t: t[1])
+        plt.barh([t[0] for t in data_tuples], [t[1] for t in data_tuples])
+        plt.xlim((0, 0.5))
+        plt.xlabel('Expected Total Variation Distance')
+        plt.title(f'Variation Across Contexts: {model_name}')
+        plt.savefig(self.save_path / 'models' / model_name / 'tv_distances.png', bbox_inches='tight')
+
+    def plot_persona_tv_distances(self):
+        plt.close('all')
+        plt.clf()
         fig, axes = plt.subplots(3, 3, figsize=(9, 10))
         for task_name, ax in zip(self.task_names, itertools.chain(*axes)):
-            persona_tv_difference = self.get_metric_for_task(task_name, 'expected_tv_distance_personas')
-            question_tv_difference = self.get_metric_for_task(task_name, 'expected_tv_distance_questions')
-            expected_tv_distance_plot(ax, persona_tv_difference, question_tv_difference, self.model_names, task_name, legend=False, title_fn=lambda tn: f'{tn}')
+            tv_differences = [self.get_metric_for_task(task_name, 'expected_tv_distance_questions')] + np.array(self.get_metric_for_task(task_name, 'expected_tv_distance_persona_questions')).T.tolist()
+            sequences = [(label, data) for label, data in zip(['default', *self.context_names], tv_differences)]
+            expected_tv_distance_plot(ax, sequences, self.model_names, task_name, title_fn=lambda tn: f'{tn}')
         for ax in fig.get_axes():
             ax.label_outer()
         handles, labels = axes[0][0].get_legend_handles_labels()
         fig.suptitle('Expected Total Variation Distance Between Contexts', fontsize='x-large')
         fig.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -.1))
         plt.tight_layout()
-        plt.savefig(self.save_path / 'all_tv_distances.png', bbox_inches='tight')
+        plt.savefig(self.save_path / 'persona_tv_distances.png', bbox_inches='tight')
 
     def plot_all_persona_shifts(self, model_name: str):
         plt.close('all')
@@ -471,7 +514,6 @@ class MetricsPlotter:
         plt.tight_layout()
         plt.savefig(self.save_path / 'models' / model_name / 'all_persona_shifts.png', bbox_inches='tight')
 
-
     def plot_all(self):
         print(f'Saving figures to {self.save_path}')
         self.save_path.mkdir(exist_ok=True, parents=True)
@@ -480,12 +522,14 @@ class MetricsPlotter:
         for plot_fn in tqdm([
             self.plot_expected_tv_distance_of_personas,
             self.predictive_accuracy,
-            self.plot_all_tv_distances
+            self.plot_all_tv_distances,
+            self.plot_persona_tv_distances
         ], desc='Making Overall Plots'):
             plot_fn()
         for model_name in tqdm(self.model_names, desc='Making Model Plots'):
             self.mean_behavior_shift_model(model_name)
             self.plot_all_persona_shifts(model_name)
+            self.plot_tv_distances_model(model_name)
         for task_name in tqdm(self.task_names, desc='Making Task Plots'):
             self.mean_behavior_shift_task(task_name)
             self.overall_performance(task_name)
