@@ -14,8 +14,8 @@ from tqdm import tqdm
 
 from persona_consistency.prompting import Prompter
 from persona_consistency.questions import (ExactMatchQuestion,
-                                        FreeResponseQuestion,
-                                        MultipleChoiceQuestion, Question)
+                                           FreeResponseQuestion,
+                                           MultipleChoiceQuestion, Question)
 
 gpt_letter_tokens = [317, 347, 327, 360, 412, 376, 402, 367, 314, 449, 509, 406, 337, 399, 440, 350, 1195, 371, 311, 309, 471, 569, 370, 1395, 575, 1168]  # " A", " B", etc.
 
@@ -28,6 +28,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Completion:
+    """
+    Represents a completion response from a model.
+
+    Attributes:
+        prompt (str): The prompt text that was sent to the model.
+        text (str): The completion text that was returned by the model.
+        meta (Optional[Dict]): Additional metadata associated with the completion.
+        logprobs (Optional[List[Dict[str, float]]]): Log probabilities associated with the completion.
+    """
+        
     prompt: str
     text: str
     meta: Optional[Dict] = None
@@ -51,6 +61,10 @@ class Completion:
 
 
 class Completer(ABC):
+    """
+    Abstract base class for completers. Defines the interface that all completers must implement.
+    """
+    
     @abstractmethod
     def __call__(self, prompts: List[str], *args, **kwargs) -> List[Completion]:
         ...
@@ -62,6 +76,18 @@ class Completer(ABC):
 
 
 class ThrottledCompleter(Completer):
+    """
+    A wrapper around a completer that adds throttling functionality.
+
+    Attributes:
+        completer (Completer): The underlying completer.
+        iteration_pause_seconds (int): Number of seconds to pause between iterations.
+        retry_pause_seconds (int): Number of seconds to pause between retries.
+        max_tries (int): Maximum number of retry attempts.
+        last_called_time (int): Timestamp of the last call to the completer.
+        completion_batch_size (int): Size of the batch for completion.
+    """
+    
     def __init__(self, completer: Completer, pause_seconds: int = 20, completion_batch_size: int = 1, retry_pause_seconds: int = 30) -> None:
         self.completer = completer
         self.iteration_pause_seconds = pause_seconds
@@ -108,6 +134,13 @@ class ThrottledCompleter(Completer):
 
 
 class GPT3(Completer):
+    """
+    A completer that uses the GPT-3 model.
+
+    Attributes:
+        completion_params (Dict[str, Any]): Parameters for the completion request.
+    """
+
     def __init__(self, model_name='text-davinci-003', temperature: float = 0.0, max_tokens: int = 1024) -> None:
         self.completion_params: Dict[str, Any] = dict(
             model=model_name,
@@ -148,6 +181,15 @@ class GPT3(Completer):
 
 @dataclass
 class Answer:
+    """
+    Represents an answer to a question.
+
+    Attributes:
+        question (Question): The question being answered.
+        completion (Completion): The completion used to generate the answer.
+        prompter (Prompter): The prompter used to generate the prompt.
+    """
+
     question: Question
     completion: Completion
     prompter: Prompter
@@ -169,6 +211,13 @@ class Answer:
 
 @dataclass
 class AnswerSet(abc.Sequence):
+    """
+    Represents a set of answers.
+
+    Attributes:
+        answers (List[Answer]): List of answers.
+    """
+    
     answers: List[Answer]
 
     @property
@@ -225,6 +274,18 @@ class AnswerSet(abc.Sequence):
 
 
 def answer(questions: List[Union[Question, FreeResponseQuestion, MultipleChoiceQuestion]], prompter: Prompter, completer: Completer) -> AnswerSet:
+    """
+    Answers a list of questions using the given prompter and completer.
+
+    Args:
+        questions (List[Union[Question, FreeResponseQuestion, MultipleChoiceQuestion]]): List of questions to answer.
+        prompter (Prompter): The prompter used to generate the prompts.
+        completer (Completer): The completer used to generate the completions.
+
+    Returns:
+        AnswerSet: A set of answers to the questions.
+    """
+
     if not questions:
         return AnswerSet([])
     prompts = [prompter.make_prompt(q) for q in questions]
@@ -234,6 +295,18 @@ def answer(questions: List[Union[Question, FreeResponseQuestion, MultipleChoiceQ
 
 
 def answer_multiple_choice(questions: List[MultipleChoiceQuestion], prompter: Prompter, completer: Completer) -> AnswerSet:
+    """
+    Answers a list of multiple-choice questions using the given prompter and completer.
+
+    Args:
+        questions (List[MultipleChoiceQuestion]): List of multiple-choice questions to answer.
+        prompter (Prompter): The prompter used to generate the prompts.
+        completer (Completer): The completer used to generate the completions.
+
+    Returns:
+        AnswerSet: A set of answers to the questions.
+    """
+
     if not questions:
         return AnswerSet([])
     options = list(questions[0].options.keys())

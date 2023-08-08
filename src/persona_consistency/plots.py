@@ -13,6 +13,15 @@ from tqdm import tqdm
 
 
 def aggregate_similar_contexts(data: np.ndarray) -> np.ndarray:
+    """
+    Aggregates similar contexts by rearranging and taking the mean along a specific axis.
+
+    Args:
+        data (np.ndarray): The input data array.
+
+    Returns:
+        np.ndarray: The aggregated data array.
+    """
     if len(data.shape) == 1:
         data = einops.rearrange(data, 'p -> p 1')
     data = einops.rearrange(data, '(c r) q -> c r q', r=4)
@@ -20,10 +29,28 @@ def aggregate_similar_contexts(data: np.ndarray) -> np.ndarray:
 
 
 def binary_tv_distance(p, q) -> float:
+    """
+    Calculates the binary total variation distance between two probabilities.
+
+    Args:
+        p, q: Probabilities to compare.
+
+    Returns:
+        float: The binary total variation distance.
+    """
     return abs(p - q)
 
 
 def calculate_tv_distance(answer_probs) -> float:
+    """
+    Calculates the expected total variation distance for of a pair of probabilities sampled from a given set of answer probabilities.
+
+    Args:
+        answer_probs: The probabilities of answers.
+
+    Returns:
+        float: The total variation distance.
+    """
     mean_tv_distances = []
     for row in answer_probs:
         tv_distances = [binary_tv_distance(p, q) for p, q in itertools.combinations_with_replacement(row, 2)]
@@ -31,28 +58,76 @@ def calculate_tv_distance(answer_probs) -> float:
         mean_tv_distances.append(mean_tv_distance)
     return np.array(mean_tv_distances).mean()
 
+
 def tv_distance_alternating(answer_probs) -> float:
+    """
+    Calculates the expected total variation distance when alternating answers come from different distributions.
+
+    Args:
+        answer_probs: The probabilities of answers.
+
+    Returns:
+        float: The total variation distance.
+    """
     answer_probs = einops.rearrange(answer_probs, 'c (q v) -> (v c) q', v=2)
     return calculate_tv_distance(answer_probs)
 
 
 def load_results(path: Path) -> Dict[str, Any]:
+    """
+    Loads results from a JSON file.
+
+    Args:
+        path (Path): The path to the JSON file.
+
+    Returns:
+        Dict[str, Any]: The loaded results.
+    """
     results = json.load(path.open('r'))
     return results['metrics']
 
 
 def load_results_for(data_path: Path, test_name: str, model: str) -> "Metrics":
+    """
+    Loads results for a specific test and model.
+
+    Args:
+        data_path (Path): The path to the data.
+        test_name (str): The name of the test.
+        model (str): The name of the model.
+
+    Returns:
+        Metrics: The loaded metrics.
+    """
     metric_dict = load_results(data_path / test_name / model / 'completions.json')
     alternating_behavior = test_name in ('abortion-should-be-illegal', 'conscientiousness', 'neuroticism', 'politically-conservative')
     return Metrics(np.array(metric_dict['answer_probs']), alternating_behavior)
 
 
 def sample_question_for(data_path: Path, test_name: str):
+    """
+    Provides an example question for a specific test.
+
+    Args:
+        data_path (Path): The path to the data.
+        test_name (str): The name of the test.
+
+    Returns:
+        The sampled question.
+    """
     results = json.load((data_path / test_name / 'davinci' / 'completions.json').open('r'))
     return results['questions'][0]
 
 
 class Metrics:
+    """
+    Represents metrics for a set of answer probabilities.
+
+    Attributes:
+        answer_probs (np.ndarray): The answer probabilities.
+        alternating_behavior (bool): Indicates if the behavior is alternating.
+        question_tv_distance_fn (function): Function to calculate total variation distance.
+    """
     def __init__(self, answer_probs: np.ndarray, alternating_behavior: bool = False) -> None:
         self._answer_probs = answer_probs
         self.alternating_behavior = alternating_behavior
@@ -123,6 +198,16 @@ class Metrics:
 
 
 class MetricsCollection:
+    """
+    Provides functionality for plotting various metrics.
+
+    Attributes:
+        data_path (Path): Path to the data.
+        save_path (Path): Path to save the plots.
+        metrics_collection (MetricsCollection): Collection of metrics.
+        sample_questions (Dict[str, str]): Sample questions for tasks.
+        context_names (List[str]): Names of the contexts.
+    """
     def __init__(self, metrics_dict: Dict[Tuple[str, str], Metrics], task_names: List[str], model_names: List[str]) -> None:
         self.metrics_dict = metrics_dict
         self.task_names = task_names

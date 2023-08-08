@@ -16,6 +16,16 @@ from persona_consistency.questions import MultipleChoiceQuestion, YesNoQuestion
 
 
 def add_response_to(question: MultipleChoiceQuestion, inducer: str) -> MultipleChoiceQuestion:
+    """
+    Add a response inducer to a given multiple-choice question.
+
+    Args:
+        question (MultipleChoiceQuestion): The original question.
+        inducer (str): The inducer text to add.
+
+    Returns:
+        MultipleChoiceQuestion: The modified question with the inducer.
+    """
     text = f"""{inducer}
 
 Human:
@@ -30,6 +40,17 @@ Human:
 
 
 def evaluate_task(completer: Completer, simulation_inducers: List[str], questions: List[MultipleChoiceQuestion]) -> List[AnswerSet]:
+    """
+    Evaluate a task by answering multiple-choice questions.
+
+    Args:
+        completer (Completer): The completer object to use for answering questions.
+        simulation_inducers (List[str]): List of simulation inducers.
+        questions (List[MultipleChoiceQuestion]): List of questions to be answered.
+
+    Returns:
+        List[AnswerSet]: List of answer sets for the given questions.
+    """
     prompter = SingleWordAnswerPrompter(lambda q: f'Human: {q.text}\n\nAssistant:', score_prefix='')
     answers = []
     for question in questions:
@@ -39,16 +60,46 @@ def evaluate_task(completer: Completer, simulation_inducers: List[str], question
 
 
 def get_answer_probs(answers: AnswerSet) -> np.ndarray:
+    """
+    Get the probabilities of the answers.
+
+    Args:
+        answers (AnswerSet): The set of answers.
+
+    Returns:
+        np.ndarray: An array of answer probabilities.
+    """
     return np.array([logits[q.label] for q, logits in zip(answers.questions, answers.mc_answer_probs)])  # type: ignore
 
 
 def calculate_metrics(answers: List[AnswerSet]) -> Dict[str, Any]:
+    """
+    Calculate metrics for a list of answer sets.
+
+    Args:
+        answers (List[AnswerSet]): List of answer sets.
+
+    Returns:
+        Dict[str, Any]: Dictionary containing the calculated metrics.
+    """
     answer_probs = np.stack([get_answer_probs(a) for a in answers])
     metrics = Metrics(answer_probs)
     return metrics.to_json()
 
 
 def get_questions_path(task_name: str):
+    """
+    Get the path to the questions for a given task name.
+
+    Args:
+        task_name (str): The name of the task.
+
+    Returns:
+        Path: The path to the questions.
+
+    Raises:
+        NotImplementedError: If the task name is not found.
+    """
     evals_path = Path(f'questions/Anthropic-evals')
     for category_path in evals_path.iterdir():
         for task_path in category_path.iterdir():
@@ -58,6 +109,19 @@ def get_questions_path(task_name: str):
 
 
 def evaluate(model_name: str, task_name: str, simulation_inducers: List[str], save_path: Path, n_questions: int):
+    """
+    Evaluate a model on a specific task and save the results.
+
+    Args:
+        model_name (str): The name of the model to evaluate.
+        task_name (str): The name of the task to evaluate.
+        simulation_inducers (List[str]): List of simulation inducers.
+        save_path (Path): Path to save the results.
+        n_questions (int): Number of questions to evaluate.
+
+    Returns:
+        None
+    """
     save_dir = save_path / task_name / model_name
     save_dir.mkdir(exist_ok=True, parents=True)
 
@@ -86,6 +150,12 @@ def evaluate(model_name: str, task_name: str, simulation_inducers: List[str], sa
 
 
 def main():
+    """
+    Main function to run the evaluation on multiple models and tasks.
+
+    Returns:
+        None
+    """
     save_path = Path('results') / '2_tasks'
     models = ['davinci', 'davinci-instruct-beta', 'text-davinci-001', 'text-davinci-002', 'text-davinci-003']
     tasks = ['conscientiousness', 'subscribes-to-deontology']
